@@ -6,62 +6,54 @@ import httpx
 app = FastAPI()
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-FORM_MAP = {
-    "1aKmZeDmO4t3UAy-iyl7QEHdfZ81WKdam5Gg80iAB-Ek": "DB-32a149c5244780fe92abed239e031f42" # webhook trigger test
-}
-FORM_MAP_STR = os.getenv("FORM_MAP", "{}")
-FORM_MAP = json.loads(FORM_MAP_STR)
-
-
-@app.get("/")
-def read_root():
-    return {"status": "Server is running!"}
+# 이제 FORM_CONFIG에는 DB_ID만 있으면 됩니다. columns 매핑은 필요 없습니다.
+FORM_CONFIG_STR = os.getenv("FORM_CONFIG", "{}")
+FORM_CONFIG = json.loads(FORM_CONFIG_STR)
 
 @app.post("/webhook/form")
 async def handle_form_submit(request: Request):
-    data = await request.json()
-    form_id = data.get("form_id")
-    responses = data.get("responses", {})
+    payload = await request.json()
+    form_id = payload.get("form_id")
+    responses = payload.get("responses", {})
+    
+    # 1. 등록된 폼인지 확인 및 DB_ID 가져오기
+    config = FORM_CONFIG.get(form_id)
+    if not config:
+        return {"status": "ignored", "reason": "unregistered_form"}
+    
+    db_id = config if isinstance(config, str) else config.get("db_id")
 
-    # 1. 등록된 폼인지 확인
-    db_id = FORM_MAP.get(form_id)
-    if not db_id:
-        print(f"미등록 폼 접근: {form_id}")
-        raise HTTPException(status_code=404, detail="Unregistered Form ID")
-
-    # 2. 노션 API 호출 준비
-    url = "https://api.notion.com/v1/pages"
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Notion-Version": "2022-06-28",
-        "Content-Type": "application/json"
-    }
-
-    # 3. 구글 폼 데이터를 노션 속성으로 자동 변환
-    properties = {}
+    # 2. 모든 질문과 답변을 하나의 긴 텍스트로 합치기 (핵심 로직)
+    full_text = ""
     for question, answer_list in responses.items():
-        # 질문 제목이 노션의 '이름(Title)' 속성인 경우 처리 (보통 첫 번째 질문)
-        # 노션 DB의 메인 제목 컬럼명이 '질문'이라면 아래와 같이 구성
-        clean_question = question.replace("\n", " ").strip()
-        answer = answer_list[0] if answer_list else ""
-        
-        # 모든 데이터를 텍스트(rich_text) 형태로 저장 (가장 범용적)
-        properties[clean_question] = {
-            "rich_text": [{"text": {"content": str(answer)}}]
+        answer = answer_list[0] if answer_list else "(응답 없음)"
+        full_text += f"📍 {question}\n   👉 {answer}\n\n"
+
+    # 3. 노션 속성 구성 (ID와 내용 딱 두 가지만 사용)
+    properties = {
+        "ID": {
+            "title": [{"text": {"content": f"[{payload.get('form_title')}] {payload.get('timestamp')}"}}]
+        },
+        "내용": {
+            "rich_text": [{"text": {"content": full_text}}]
         }
-
-    # 노션 DB의 'Title' 속성은 필수입니다. DB의 첫 번째 컬럼명을 'ID'로 만들었다고 가정합니다.
-    properties["ID"] = {"title": [{"text": {"content": f"응답_{data.get('timestamp')}"}}]}
-
-    payload = {
-        "parent": {"database_id": db_id},
-        "properties": properties
     }
 
+    # 4. 노션 API 호출
     async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"노션 전송 실패: {response.text}")
-            return {"status": "error", "detail": response.json()}
-            
+        headers = {
+            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json"
+        }
+        res = await client.post(
+            "https://api.notion.com/v1/pages",
+            headers=headers,
+            json={"parent": {"database_id": db_id}, "properties": properties}
+        )
+        
+        if res.status_code != 200:
+            print(f"노션 전송 실패: {res.text}")
+            return {"status": "error", "message": res.json()}
+
     return {"status": "success"}
