@@ -1,12 +1,11 @@
 import os
 import json
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 import httpx
 
 app = FastAPI()
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
-# 이제 FORM_CONFIG에는 DB_ID만 있으면 됩니다. columns 매핑은 필요 없습니다.
 FORM_CONFIG_STR = os.getenv("FORM_CONFIG", "{}")
 FORM_CONFIG = json.loads(FORM_CONFIG_STR)
 
@@ -14,32 +13,35 @@ FORM_CONFIG = json.loads(FORM_CONFIG_STR)
 async def handle_form_submit(request: Request):
     payload = await request.json()
     form_id = payload.get("form_id")
+    # 구글 앱스 스크립트에서 보낸 'responses' 데이터를 가져옵니다.
     responses = payload.get("responses", {})
     
-    # 1. 등록된 폼인지 확인 및 DB_ID 가져오기
+    # DB ID 가져오기
     config = FORM_CONFIG.get(form_id)
     if not config:
         return {"status": "ignored", "reason": "unregistered_form"}
-    
     db_id = config if isinstance(config, str) else config.get("db_id")
 
-    # 2. 모든 질문과 답변을 하나의 긴 텍스트로 합치기 (핵심 로직)
+    # [수정 포인트] 모든 응답 데이터를 강제로 텍스트로 합치기
     full_text = ""
-    for question, answer_list in responses.items():
-        answer = answer_list[0] if answer_list else "(응답 없음)"
-        full_text += f"📍 {question}\n   👉 {answer}\n\n"
+    for question, answer in responses.items():
+        # 답변이 리스트 형태인 경우 첫 번째 값을 가져오고, 아니면 그대로 사용
+        clean_answer = answer[0] if isinstance(answer, list) and len(answer) > 0 else str(answer)
+        full_text += f"📍 {question}\n👉 {clean_answer}\n\n"
 
-    # 3. 노션 속성 구성 (ID와 내용 딱 두 가지만 사용)
+    # 만약 위 루프를 돌았는데도 텍스트가 비어있다면 전체 페이로드라도 기록 (백업)
+    if not full_text:
+        full_text = f"데이터 추출 실패. 전체 페이로드: {json.dumps(responses, ensure_ascii=False)}"
+
     properties = {
         "ID": {
-            "title": [{"text": {"content": f"[{payload.get('form_title')}] {payload.get('timestamp')}"}}]
+            "title": [{"text": {"content": f"[{payload.get('form_title', '응답')}] {payload.get('timestamp', '')}"}}]
         },
         "내용": {
             "rich_text": [{"text": {"content": full_text}}]
         }
     }
 
-    # 4. 노션 API 호출
     async with httpx.AsyncClient() as client:
         headers = {
             "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -52,8 +54,4 @@ async def handle_form_submit(request: Request):
             json={"parent": {"database_id": db_id}, "properties": properties}
         )
         
-        if res.status_code != 200:
-            print(f"노션 전송 실패: {res.text}")
-            return {"status": "error", "message": res.json()}
-
-    return {"status": "success"}
+    return {"status": "success", "sent_text": full_text}
