@@ -36,20 +36,29 @@ async def get_database_columns(db_id):
 @app.post("/webhook/form")
 async def handle_form_submit(request: Request):
     payload = await request.json()
+
+    # 1. 시트에서 보낸 '진짜 이름' 확인
+    raw_sheet_name = payload.get("sheet_name", "")
+    sheet_name = raw_sheet_name.strip()
+    print(f"DEBUG: 서버가 받은 시트 이름 -> [{raw_sheet_name}]")
+    
+    config = await fetch_config()
+    db_id = config.get(sheet_name)
+    
+    if not db_id:
+        # 매핑 실패 시 로그에 상세 이유 출력
+        print(f"DEBUG: ❌ 매핑 실패! '{sheet_name}'라는 이름이 시트에 없습니다.")
+        print(f"DEBUG: 현재 시트에 등록된 이름들: {list(config.keys())}")
+        return {"status": "ignored"}
+
+    # 2. 노션 전송 준비
+    print(f"DEBUG: ✅ 매핑 성공! DB ID: {db_id[:8]}...")
     
     # 구글 시트에서 보낸 데이터 추출
     sheet_name = payload.get("sheet_name", "").strip()
     responses = payload.get("responses", {})
     timestamp = payload.get("timestamp", "시간 정보 없음")
     
-    # 1. 시트 이름을 보고 어떤 노션 DB로 보낼지 결정
-    config = await fetch_config()
-    db_id = config.get(sheet_name)
-    
-    if not db_id:
-        print(f"⚠️ 등록되지 않은 시트 이름 접근: [{sheet_name}]")
-        return {"status": "ignored", "reason": "sheet_name_not_found_in_config"}
-
     # 2. 해당 노션 DB의 실제 컬럼 목록 확인
     existing_columns = await get_database_columns(db_id)
 
