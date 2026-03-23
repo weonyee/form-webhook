@@ -5,7 +5,6 @@ import httpx
 
 app = FastAPI()
 
-# 1. 폼 ID와 노션 DB ID 매핑 (여기에 폼을 계속 추가하면 됩니다)
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 FORM_MAP = {
     "1aKmZeDmO4t3UAy-iyl7QEHdfZ81WKdam5Gg80iAB-Ek": "DB-32a149c5244780fe92abed239e031f42" # webhook trigger test
@@ -13,7 +12,6 @@ FORM_MAP = {
 FORM_MAP_STR = os.getenv("FORM_MAP", "{}")
 FORM_MAP = json.loads(FORM_MAP_STR)
 
-NOTION_TOKEN = "ntn_U55326239434WfDVycKH5ZfcZ6XtmvAxwg6XjQzBPGogim"
 
 @app.get("/")
 def read_root():
