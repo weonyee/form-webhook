@@ -1,6 +1,7 @@
 import os
 import httpx
-import re  # 정규표현식 추가
+import re
+import json # JSON 모듈 추가
 from fastapi import FastAPI, Request
 
 app = FastAPI()
@@ -18,10 +19,7 @@ async def fetch_config():
             return {}
 
 def clean_uuid(raw_id):
-    """UUID에서 따옴표, 역슬래시 등 모든 불순물을 제거합니다."""
-    if not raw_id:
-        return ""
-    # 숫자, 영문, 하이픈(-)을 제외한 모든 문자를 제거
+    if not raw_id: return ""
     return re.sub(r'[^a-zA-Z0-9-]', '', str(raw_id)).strip()
 
 async def get_database_columns(db_id):
@@ -51,10 +49,9 @@ async def handle_form_submit(request: Request):
         print(f"DEBUG: ❌ 매핑 실패! '{raw_sheet_name}'이 시트에 없습니다.")
         return {"status": "ignored"}
 
-    # 🔥 어떤 형태의 따옴표도 살아남지 못하게 정규식으로 청소
+    # 🔥 정규식으로 청소 (여기까진 잘 작동함)
     db_id = clean_uuid(db_id_raw)
-    
-    print(f"DEBUG: ✅ 정제된 DB ID: {db_id}") # 로그에서 따옴표가 사라졌는지 확인용
+    print(f"DEBUG: ✅ 전송 직전 DB ID: {db_id}")
     
     responses = payload.get("responses", {})
     timestamp = payload.get("timestamp", "시간 정보 없음")
@@ -77,16 +74,23 @@ async def handle_form_submit(request: Request):
     if unmapped_text and "비매핑_데이터" in existing_columns:
         properties["비매핑_데이터"] = { "rich_text": [{"text": {"content": unmapped_text[:2000]}}] }
 
+    # 🚀 [핵심 수정] json= 대신 content= 사용하여 따옴표 중복 방지
+    final_payload = {
+        "parent": {"database_id": db_id}, 
+        "properties": properties
+    }
+
     async with httpx.AsyncClient() as client:
         headers = {
             "Authorization": f"Bearer {NOTION_TOKEN}",
             "Notion-Version": "2022-06-28",
             "Content-Type": "application/json"
         }
+        # 🔥 json.dumps를 사용하여 수동으로 직렬화한 뒤 전송합니다.
         res = await client.post(
             "https://api.notion.com/v1/pages",
             headers=headers,
-            json={"parent": {"database_id": db_id}, "properties": properties}
+            content=json.dumps(final_payload) # <--- 여기가 포인트!
         )
         
         if res.status_code != 200:
