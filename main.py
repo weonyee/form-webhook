@@ -1,5 +1,6 @@
 import os
 import httpx
+import re  # 정규표현식 추가
 from fastapi import FastAPI, Request
 
 app = FastAPI()
@@ -16,6 +17,13 @@ async def fetch_config():
             print(f"설정 파일 로드 실패: {e}")
             return {}
 
+def clean_uuid(raw_id):
+    """UUID에서 따옴표, 역슬래시 등 모든 불순물을 제거합니다."""
+    if not raw_id:
+        return ""
+    # 숫자, 영문, 하이픈(-)을 제외한 모든 문자를 제거
+    return re.sub(r'[^a-zA-Z0-9-]', '', str(raw_id)).strip()
+
 async def get_database_columns(db_id):
     async with httpx.AsyncClient() as client:
         headers = {
@@ -23,8 +31,7 @@ async def get_database_columns(db_id):
             "Notion-Version": "2022-06-28"
         }
         try:
-            # ✅ 여기서도 혹시 모를 db_id의 따옴표를 제거합니다.
-            clean_db_id = str(db_id).replace('"', '').replace('\\', '').strip()
+            clean_db_id = clean_uuid(db_id)
             res = await client.get(f"https://api.notion.com/v1/databases/{clean_db_id}", headers=headers)
             if res.status_code == 200:
                 return res.json().get("properties", {}).keys()
@@ -35,52 +42,40 @@ async def get_database_columns(db_id):
 @app.post("/webhook/form")
 async def handle_form_submit(request: Request):
     payload = await request.json()
-
-    raw_sheet_name = payload.get("sheet_name", "")
-    sheet_name = raw_sheet_name.strip()
-    print(f"DEBUG: 서버가 받은 시트 이름 -> [{raw_sheet_name}]")
+    raw_sheet_name = payload.get("sheet_name", "").strip()
     
     config = await fetch_config()
-    db_id_raw = config.get(sheet_name)
+    db_id_raw = config.get(raw_sheet_name)
     
     if not db_id_raw:
-        print(f"DEBUG: ❌ 매핑 실패! '{sheet_name}'라는 이름이 시트에 없습니다.")
+        print(f"DEBUG: ❌ 매핑 실패! '{raw_sheet_name}'이 시트에 없습니다.")
         return {"status": "ignored"}
 
-    # 🔥 [수정 핵심] 어떤 지독한 따옴표나 역슬래시가 들어와도 여기서 다 박살냅니다.
-    db_id = str(db_id_raw).replace('"', '').replace('\\', '').strip()
+    # 🔥 어떤 형태의 따옴표도 살아남지 못하게 정규식으로 청소
+    db_id = clean_uuid(db_id_raw)
     
-    print(f"DEBUG: ✅ 매핑 성공! (정제된 ID): {db_id[:8]}...")
+    print(f"DEBUG: ✅ 정제된 DB ID: {db_id}") # 로그에서 따옴표가 사라졌는지 확인용
     
     responses = payload.get("responses", {})
     timestamp = payload.get("timestamp", "시간 정보 없음")
-    
     existing_columns = await get_database_columns(db_id)
 
-    # 3. 노션 데이터 꾸러미 만들기 (첫 번째 열 이름이 'ID'여야 함)
     properties = {
-        "ID": {
-            "title": [{"text": {"content": f"[{sheet_name}] {timestamp}"}}]
-        }
+        "ID": { "title": [{"text": {"content": f"[{raw_sheet_name}] {timestamp}"}}] }
     }
     
     unmapped_text = ""
-
     for question, answer_list in responses.items():
         clean_q = question.strip()
         answer = answer_list[0] if isinstance(answer_list, list) and answer_list else str(answer_list)
         
         if clean_q in existing_columns and clean_q != "ID":
-            properties[clean_q] = {
-                "rich_text": [{"text": {"content": str(answer)}}]
-            }
+            properties[clean_q] = { "rich_text": [{"text": {"content": str(answer)}}] }
         else:
             unmapped_text += f"📍 {clean_q}: {answer}\n"
 
     if unmapped_text and "비매핑_데이터" in existing_columns:
-        properties["비매핑_데이터"] = {
-            "rich_text": [{"text": {"content": unmapped_text[:2000]}}]
-        }
+        properties["비매핑_데이터"] = { "rich_text": [{"text": {"content": unmapped_text[:2000]}}] }
 
     async with httpx.AsyncClient() as client:
         headers = {
@@ -98,5 +93,5 @@ async def handle_form_submit(request: Request):
             print(f"❌ 노션 전송 에러: {res.text}")
             return {"status": "error", "detail": res.json()}
 
-    print(f"✅ 성공: [{sheet_name}] 데이터가 노션에 기록되었습니다.")
+    print(f"✅ 성공: [{raw_sheet_name}] 데이터 기록 완료")
     return {"status": "success"}
