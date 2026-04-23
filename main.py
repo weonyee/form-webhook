@@ -65,7 +65,7 @@ async def handle_form_submit(request: Request):
         
         # 3. 노션 API가 원하는 정확한 구조 (수동 조립과 다름없음)
         data = {
-            "parent": { "type": "database_id", "database_id": "348149c5-2447-808b-b6c5-f280f6974276" },
+            "parent": { "type": "database_id", "database_id": "34862a893ac5801daea6eb18bb644897" },
             "properties": properties
         }
         
